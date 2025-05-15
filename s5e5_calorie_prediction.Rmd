@@ -1,0 +1,106 @@
+---
+title: "s5e5_calorie_prediction"
+author: "WY"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+title: "ml_workflow"
+author: "WangYong"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Target
+The goal of this competition is to predict how many calories were burned during a workout.
+
+ML tools: 
+  tidymodels related worksflows & glm, lightgbm, ranger engine.
+  
+Evaluatioin metric:
+  Root Mean Squared Error (RMSLE)
+  
+  sample_submission.csv : 
+  basic lm score on rcp_base_v0 :
+  kaggle best score is 0.0563 in the begining.
+
+ 
+
+  
+Notice:
+
+
+## librar y & load_data
+
+### library
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(finetune)
+library(future)
+library(purrr)
+library(furrr)
+library(textrecipes)
+library(themis)
+library(embed)
+#library(tailor)
+
+
+library(bonsai)
+library(lightgbm)
+library(xgboost)
+library(ranger)
+library(betareg)
+library(readr)
+library(janitor)
+library(lubridate)
+library(betareg)
+
+library(memoise)
+dk_cach <- memoise::cache_filesystem('./cache')
+```
+### download to local
+```{r}
+competition_name <- 'playground-series-s5e5'
+data_path <- file.path('../input',competition_name)
+target_name <- 'calories'
+system(paste0('kaggle competitions  download -c ', competition_name))
+unzip(paste0(competition_name,'.zip'),exdir=file.path('../input',competition_name))
+file.remove(paste0(competition_name,'.zip'))
+```
+
+
+### loading data
+
+```{r}
+
+train<- 
+  readr::read_csv(file.path(data_path, 'train.csv'),
+                  show_col_types = FALSE)|>
+  janitor::clean_names()
+test <- 
+  readr::read_csv(file.path(data_path, 'test.csv'),
+                  show_col_types = FALSE)|>
+   janitor::clean_names()
+submission <-  readr::read_csv(file.path(data_path, 'sample_submission.csv'),show_col_types = FALSE)
+```
+
+### quick skim
+
+```{r}
+train|> skimr::skim()
+```
+important notice: 
+- no missing data
+- some column is not normal distribution
+
