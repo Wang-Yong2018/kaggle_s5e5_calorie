@@ -233,7 +233,9 @@ aug_preds <- augment(fit_lm, te)|>mutate(.pred=case_when(.pred<=0~0,
 
 rmsle_value <- rmsle(aug_preds$calories, aug_preds$.pred)
 print(rmsle_value)
-
+aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
+  ggplot(aes(x=value, fill=name)) +
+  geom_density(alpha=0.5)
 ```
 
 
