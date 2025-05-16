@@ -9,16 +9,6 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
----
-title: "ml_workflow"
-author: "WangYong"
-date: "`r Sys.Date()`"
-output: html_document
----
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
 
 ## Target
 The goal of this competition is to predict how many calories were burned during a workout.
@@ -33,13 +23,20 @@ Evaluatioin metric:
   basic lm score on rcp_base_v0 :
   kaggle best score is 0.0563 in the begining.
 
- 
+```{r}
+rmsle <- function(actual, predicted) {
+  log_actual <- log1p(actual)
+  log_predicted <- log1p(predicted)
+  sqrt(mean((log_actual - log_predicted)^2))
+}
+
+``` 
 
   
 Notice:
 
 
-## librar y & load_data
+## Init library and Data
 
 ### library
 
@@ -106,7 +103,8 @@ important notice:
 
 ## EDA
 
-## data split
+## Data Preparing
+### data split
 ```{r}
 
 set.seed(42)
@@ -115,7 +113,6 @@ tr <- rsample::training(splits)
 te <- rsample::testing(splits)
 ```
 
-## model
 ### recipes
 
 #### basic recipes (rmsle 0.5)
@@ -206,17 +203,9 @@ rec_v3 <- recipes::recipe(calories ~ ., data = tr) |>
   recipes::check_missing(recipes::all_predictors())
 ```
 
+### quick linear regression
 
-### simple linear regression
 
-```{r}
-rmsle <- function(actual, predicted) {
-  log_actual <- log1p(actual)
-  log_predicted <- log1p(predicted)
-  sqrt(mean((log_actual - log_predicted)^2))
-}
-
-```
 
 ```{r}
 current_rec <- rec_v2
