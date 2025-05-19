@@ -24,13 +24,54 @@ Evaluatioin metric:
   kaggle best score is 0.0563 in the begining.
 
 ```{r}
-rmsle <- function(actual, predicted) {
-  log_actual <- log1p(actual)
-  log_predicted <- log1p(predicted)
-  sqrt(mean((log_actual - log_predicted)^2))
+library(yardstick)
+
+# 核心计算逻辑（隐藏metric_impl参数）
+rmsle_impl <- function(truth, estimate,case_weight=NULL) {
+  sqrt(mean((log1p(truth) - log1p(estimate))^2))
 }
 
-``` 
+# 向量化版本（处理NA值）
+rmsle_vec <- function(truth, estimate, na_rm = TRUE,case_weights=NULL, ...) {
+  check_numeric_metric(truth, estimate, case_weights)
+  if (na_rm) {
+    result <- yardstick_remove_missing(truth, estimate, case_weights)
+
+    truth <- result$truth
+    estimate <- result$estimate
+    case_weights <- result$case_weights
+  } else if (yardstick_any_missing(truth, estimate, case_weights)) {
+    return(NA_real_)
+  }
+  rmsle_impl(truth = truth,
+             estimate = estimate,
+             case_weight=case_weigths)
+}
+
+# 数据框方法（支持分组计算）
+rmsle <- function(data, ...) {
+  UseMethod("rmsle")
+}
+rmsle <- new_numeric_metric(rmsle, direction = "minimize")
+
+rmsle.data.frame <- function(data, truth, estimate, na_rm = TRUE,case_weights=NULL, ...) {
+  numeric_metric_summarizer(
+    name='rmsle',
+    fn = rmsle_vec,
+    data = data,
+    truth = !!enquo(truth),
+    estimate = !!enquo(estimate),
+    na_rm = na_rm,
+    case_weights=!!enquo(case_weights)
+  )
+}
+
+rmsle_metric <- metric_set(rmse,rsq,rmsle)
+
+```
+
+
+
 
   
 Notice:
@@ -51,6 +92,7 @@ library(textrecipes)
 library(themis)
 library(embed)
 #library(tailor)
+library(ggfortify)
 
 
 library(bonsai)
@@ -111,6 +153,7 @@ set.seed(42)
 splits <- rsample::initial_split(train, prop = 0.8, strata = calories)
 tr <- rsample::training(splits)
 te <- rsample::testing(splits)
+ncv  <- vfold_cv(tr,v=3,strata = calories)
 ```
 
 ### recipes
@@ -203,16 +246,19 @@ rec_v3 <- recipes::recipe(calories ~ ., data = tr) |>
   recipes::check_missing(recipes::all_predictors())
 ```
 
-### quick linear regression
+## quick model 
+### linear regression
 
 
 
 ```{r}
 current_rec <- rec_v2
+lm_eng <- 
+  parsnip::linear_reg(mode = "regression") |>
+  parsnip::set_engine("lm")
 wf_lm <- workflows::workflow() |>
 workflows::add_recipe(current_rec) |>
-workflows::add_model(parsnip::linear_reg(mode = "regression") |>
-parsnip::set_engine("lm"))
+workflows::add_model(lm_eng)
 
 
 fit_lm <- wf_lm |> fit(tr)
@@ -220,22 +266,146 @@ fit_lm <- wf_lm |> fit(tr)
 aug_preds <- augment(fit_lm, te)|>mutate(.pred=case_when(.pred<=0~0,
                                                          .default=.pred))
 
-rmsle_value <- rmsle(aug_preds$calories, aug_preds$.pred)
-print(rmsle_value)
+aug_preds |> rmsle(truth=calories,estimate=.pred)|>print()
 aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
   ggplot(aes(x=value, fill=name)) +
   geom_density(alpha=0.5)
 ```
+```{r}
+resample_option <- control_resamples(verbose=TRUE,save_workflow = TRUE, save_pred = TRUE,)
+cv_wf <- wf_lm |>
+  fit_resamples(ncv,
+                metrics = rmsle_metric,
+                control=resample_option
+                      )#|>
+#  collect_metrics()
+
+```
+
+### lightgbm regression
+
+```{r}
+current_rec <- rec_v2
+
+lgbm_eng<-
+   parsnip::boost_tree(
+     #  trees = 300, # Number of trees
+     #  learn_rate = 0.5,
+     # # tree_depth =5,
+     #  loss_reduction = 0.1,
+     #  stop_iter = 50,
+     #  #sample_size = 0.9, # Added sample_size
+     #  #tree_depth = tune(),
+     #  #mtry = 0.5,
+     #  min_n = 100
+   ) |>
+   set_mode("regression")|>
+   set_engine("lightgbm",
+              #metric='roc_auc', 
+              #num_leaves = 20,
+              #counts = FALSE,
+              #num_threads = 12,
+              metric = "rmse",              # 优化目标
+              # reg_alpha=0.01,
+              # reg_lambda = 0.5,
+              verbose=1) 
+
+wf_lgb <- workflows::workflow() |>
+workflows::add_recipe(current_rec) |>
+workflows::add_model(lgbm_eng)
+
+
+fit_lgb <- wf_lgb |> fit(tr)
+
+aug_preds <- augment(fit_lgb, te)|>mutate(.pred=case_when(.pred<=0~0,
+                                                         .default=.pred))
+
+aug_preds |> rmsle(calories,.pred)|>print()
+aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
+  ggplot(aes(x=value, fill=name)) +
+  geom_density(alpha=0.5)
+```
+### gam regression
+
+```{r}
+library(tidymodels)
+library(mgcv)
+gam_spec <- 
+  gen_additive_mod(
+    select_features = FALSE,  # 禁用自动特征选择
+    adjust_deg_free = tune()  # 允许自由度调优
+  ) %>%
+  set_engine(
+    "mgcv", 
+    method = "fREML",         # 使用快速REML优化方法
+    discrete = TRUE,          # 启用离散方法加速计算
+    nthreads = 8,            # 并行线程数
+    family = gaussian()      # 指定分布族（根据任务调整）
+  ) %>%
+  set_mode("regression")     # 或 "classification"
+gam_wf <- workflow() %>%
+  add_recipe(rec_v1) %>%
+  add_model(gam_spec)
+gam_formula <- calories ~ 
+  s(duration, bs = "cr", k = 15) +          # 三次样条捕捉运动时长非线性效应[6,8](@ref)
+  s(heart_rate, bs = "ad", k = 10) +       # 自适应平滑处理心率异方差性[4](@ref)
+  ti(age, duration, bs = "cr") +           # 年龄与运动时长的张量交互平滑[6](@ref)
+  s(bmi, bs = "tp") +                      # 薄板样条拟合BMI复杂关系[6](@ref)
+  s(body_temp, bs = "cr", k = 8) +         # 体温的局部平滑
+  sex_male +                               # 性别线性效应
+  s(age_x_duration) +                      # 交互项平滑扩展[6](@ref)
+  s(height_x_weight)    
+# 心率与体温交互项平滑
+# 使用bam加速计算（59万+样本）
+
+
+gam_wf_fit <- gam_wf |>fit(formula=gam_formula, data=tr)
+```
+
+```{r}
+library(mgcv)
+current_rec <- rec_v1 
+tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
+
+gam_model <- bam(
+  gam_formula,
+  data = tmp_df,                    # 使用recipes预处理后的数据
+  family = Gamma(link = "log"),            # 卡路里为正值，Gamma分布更优[4](@ref)
+  method = "REML",                         # 自动平滑参数选择[8](@ref)
+  discrete = TRUE,                         # 离散化加速
+  nthreads = 8,                            # 并行计算
+  gamma = 1.5                              # 增强正则化防过拟合[8](@ref)
+)
+
+pred_gam <- predict(gam_model, newdata = rec_v1|>prep()|>bake(te), type = "response")
+
+# 交叉验证
+#cv_results <- cv.gam(gam_model, nfolds=5, parallel=TRUE)
+
+
+```
+
+```{r}
+pred_gam <- predict(gam_model, newdata =current_rec|>prep()|>bake(tr), type = "response")
+aug_preds <- tr|>mutate(.pred_gam = pred_gam)
+```
 
 
 ```{r}
-rmsle <- function(actual, predicted) {
-  log_actual <- log1p(actual)
-  log_predicted <- log1p(predicted)
-  sqrt(mean((log_actual - log_predicted)^2))
-}
+# 绘制残差诊断图
+#par(mfrow = c(2,2))
+#gam.check(gam_model, rep = 500)            # 检查残差分布与QQ图[6](@ref)
 ```
 
+```{r}
+cv_splits <- vfold_cv(juice(rec_v1|>prep()), v = 5)
+cv_results <- fit_resamples(
+  gam_model,
+  resamples = cv_splits,
+  metrics = rmsle_metric,
+  option=resample_option
+)
+```
 
 ## kaggle submission
 Prepare Submission ----
