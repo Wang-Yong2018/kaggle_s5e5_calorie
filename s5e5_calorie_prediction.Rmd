@@ -253,6 +253,7 @@ rec_v3 <- recipes::recipe(calories ~ ., data = tr) |>
 
 ```{r}
 current_rec <- rec_v2
+
 lm_eng <- 
   parsnip::linear_reg(mode = "regression") |>
   parsnip::set_engine("lm")
@@ -328,57 +329,96 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 ### gam regression
 
 ```{r}
-library(tidymodels)
-library(mgcv)
-gam_spec <- 
-  gen_additive_mod(
-    select_features = FALSE,  # 禁用自动特征选择
-    adjust_deg_free = tune()  # 允许自由度调优
-  ) %>%
-  set_engine(
-    "mgcv", 
-    method = "fREML",         # 使用快速REML优化方法
-    discrete = TRUE,          # 启用离散方法加速计算
-    nthreads = 8,            # 并行线程数
-    family = gaussian()      # 指定分布族（根据任务调整）
-  ) %>%
-  set_mode("regression")     # 或 "classification"
-gam_wf <- workflow() %>%
-  add_recipe(rec_v1) %>%
-  add_model(gam_spec)
-gam_formula <- calories ~ 
-  s(duration, bs = "cr", k = 15) +          # 三次样条捕捉运动时长非线性效应[6,8](@ref)
-  s(heart_rate, bs = "ad", k = 10) +       # 自适应平滑处理心率异方差性[4](@ref)
-  ti(age, duration, bs = "cr") +           # 年龄与运动时长的张量交互平滑[6](@ref)
-  s(bmi, bs = "tp") +                      # 薄板样条拟合BMI复杂关系[6](@ref)
-  s(body_temp, bs = "cr", k = 8) +         # 体温的局部平滑
-  sex_male +                               # 性别线性效应
-  s(age_x_duration) +                      # 交互项平滑扩展[6](@ref)
-  s(height_x_weight)    
-# 心率与体温交互项平滑
-# 使用bam加速计算（59万+样本）
+# library(tidymodels)
+# library(mgcv)
+# gam_spec <- 
+#   gen_additive_mod(
+#     select_features = FALSE,  # 禁用自动特征选择
+#     adjust_deg_free = tune()  # 允许自由度调优
+#   ) %>%
+#   set_engine(
+#     "mgcv", 
+#     method = "fREML",         # 使用快速REML优化方法
+#     discrete = TRUE,          # 启用离散方法加速计算
+#     nthreads = 8,            # 并行线程数
+#     family = gaussian()      # 指定分布族（根据任务调整）
+#   ) %>%
+#   set_mode("regression")     # 或 "classification"
+# gam_wf <- workflow() %>%
+#   add_recipe(rec_v1) %>%
+#   add_model(gam_spec)
+# gam_formula <- calories ~ 
+#   s(duration, bs = "cr", k = 15) +          # 三次样条捕捉运动时长非线性效应[6,8](@ref)
+#   s(heart_rate, bs = "ad", k = 10) +       # 自适应平滑处理心率异方差性[4](@ref)
+#   ti(age, duration, bs = "cr") +           # 年龄与运动时长的张量交互平滑[6](@ref)
+#   s(bmi, bs = "tp") +                      # 薄板样条拟合BMI复杂关系[6](@ref)
+#   s(body_temp, bs = "cr", k = 8) +         # 体温的局部平滑
+#   sex_male +                               # 性别线性效应
+#   s(age_x_duration) +                      # 交互项平滑扩展[6](@ref)
+#   s(height_x_weight)    
+# # 心率与体温交互项平滑
+# # 使用bam加速计算（59万+样本）
+# 
+# 
+# gam_wf_fit <- gam_wf |>fit(formula=gam_formula, data=tr)
 
-
-gam_wf_fit <- gam_wf |>fit(formula=gam_formula, data=tr)
 ```
 
 ```{r}
 library(mgcv)
 current_rec <- rec_v1 
 tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
+# rec <- recipe(mpg~displacement + horsepower +weight + acceleration + year, data =auto)|>
+#   step_YeoJohnson(all_numeric_predictors())
 
-gam_model <- bam(
-  gam_formula,
-  data = tmp_df,                    # 使用recipes预处理后的数据
-  family = Gamma(link = "log"),            # 卡路里为正值，Gamma分布更优[4](@ref)
-  method = "REML",                         # 自动平滑参数选择[8](@ref)
-  discrete = TRUE,                         # 离散化加速
-  nthreads = 8,                            # 并行计算
-  gamma = 1.5                              # 增强正则化防过拟合[8](@ref)
-)
+gam_spec <- 
+  gen_additive_mod(
+    #select_features = FALSE,  # 禁用自动特征选择
+    #adjust_deg_free = tune()  # 允许自由度调优
+  ) %>%
+  set_engine(
+    "mgcv", 
+    method = "REML",         # 使用快速REML优化方法
+    #discrete = TRUE,          # 启用离散方法加速计算
+    nthreads = 12,            # 并行线程数
+    response = TRUE, # 强制结果为正数。
+    #family = gaussian()      # 指定分布族（根据任务调整）
+     family = Gamma(link = "log"),
+  ) %>%
+  set_mode("regression")     # 或 "classification"
+gam_formula <- 
+  calories ~ s(age) +
+  s(height) + s(weight) + s(duration)  +
+  s(heart_rate) + s(body_temp) + s(bmi) + s(age_squared) +
+  s(duration_squared) + s(age_x_duration) + s(height_x_weight) +
+  sex_male
 
-pred_gam <- predict(gam_model, newdata = rec_v1|>prep()|>bake(te), type = "response")
+wf <- workflow() |>
+  add_recipe(current_rec)|>
+  add_model(gam_spec, formula = gam_formula) # it is the keyu for gam modelswf_model_2 <- wf |> fit(data =auto)
 
+
+gam_wf <- wf|> fit(data = tr)
+
+
+# gam_model <- bam(
+#   gam_formula,
+#   data = tmp_df,                    # 使用recipes预处理后的数据
+#   family = Gamma(link = "log"),            # 卡路里为正值，Gamma分布更优[4](@ref)
+#   method = "REML",                         # 自动平滑参数选择[8](@ref)
+#   discrete = TRUE,                         # 离散化加速
+#   nthreads = 8,                            # 并行计算
+#   gamma = 1.5                              # 增强正则化防过拟合[8](@ref)
+# )
+
+# pred_gam <- predict(gam_wf, new_data = tr)
+aug_preds <- augment(gam_wf, te)#|>
+ # mutate(.pred=case_when(.pred<=0~0, .default=.pred))
+
+aug_preds |> rmsle(calories,.pred)|>print()
+aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
+  ggplot(aes(x=value, fill=name)) +
+  geom_density(alpha=0.5)
 # 交叉验证
 #cv_results <- cv.gam(gam_model, nfolds=5, parallel=TRUE)
 
