@@ -175,9 +175,11 @@ rec_v1 <-
   recipes::step_mutate(
     bmi = weight / (height/100)^2, 
     age_squared = age^2,
-    duration_squared = duration^2
+    duration_squared = duration^2,
+    heart_rate_squared = heart_rate^2,
+    body_temp_squared = body_temp^2
   ) |>
-  recipes::step_interact(terms = ~ age:duration + height:weight) |>
+  #recipes::step_interact(terms = ~ age:duration + height:weight) |>
   recipes::step_dummy(recipes::all_nominal_predictors()) |>
   recipes::step_zv(recipes::all_predictors()) |>
   recipes::step_normalize(recipes::all_numeric_predictors()) |>
@@ -249,8 +251,6 @@ rec_v3 <- recipes::recipe(calories ~ ., data = tr) |>
 ## quick model 
 ### linear regression
 
-
-
 ```{r}
 current_rec <- rec_v2
 
@@ -260,6 +260,7 @@ lm_eng <-
 wf_lm <- workflows::workflow() |>
 workflows::add_recipe(current_rec) |>
 workflows::add_model(lm_eng)
+
 
 
 fit_lm <- wf_lm |> fit(tr)
@@ -282,6 +283,36 @@ cv_wf <- wf_lm |>
 #  collect_metrics()
 
 ```
+### glm regression
+```{r}
+
+
+# 1. 定义Gamma回归模型
+gamma_model <- linear_reg(
+  penalty = 0.1,  # 无正则化
+  mixture = 0.5   # 纯Gamma回归（需通过set_engine调整）
+) %>%
+  set_engine("glm", family = Gamma(link = "log"))  # 使用log链接函数
+
+# 2. 创建工作流
+wf <- workflow() %>%
+  add_model(gamma_model) %>%
+  add_recipe(current_rec)
+
+# 3. 拟合模型
+gamma_fit <- wf|> fit(data = tr)
+
+# 4. 验证预测值是否为正
+
+aug_preds <- augment(gamma_fit , te)|>mutate(.pred=case_when(.pred<=0~0,
+                                                         .default=.pred))
+
+aug_preds |> rmsle(truth=calories,estimate=.pred)|>print()
+aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
+  ggplot(aes(x=value, fill=name)) +
+  geom_density(alpha=0.5)
+```
+
 
 ### lightgbm regression
 
@@ -329,90 +360,55 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 ### gam regression
 
 ```{r}
-# library(tidymodels)
-# library(mgcv)
-# gam_spec <- 
-#   gen_additive_mod(
-#     select_features = FALSE,  # 禁用自动特征选择
-#     adjust_deg_free = tune()  # 允许自由度调优
-#   ) %>%
-#   set_engine(
-#     "mgcv", 
-#     method = "fREML",         # 使用快速REML优化方法
-#     discrete = TRUE,          # 启用离散方法加速计算
-#     nthreads = 8,            # 并行线程数
-#     family = gaussian()      # 指定分布族（根据任务调整）
-#   ) %>%
-#   set_mode("regression")     # 或 "classification"
-# gam_wf <- workflow() %>%
-#   add_recipe(rec_v1) %>%
-#   add_model(gam_spec)
-# gam_formula <- calories ~ 
-#   s(duration, bs = "cr", k = 15) +          # 三次样条捕捉运动时长非线性效应[6,8](@ref)
-#   s(heart_rate, bs = "ad", k = 10) +       # 自适应平滑处理心率异方差性[4](@ref)
-#   ti(age, duration, bs = "cr") +           # 年龄与运动时长的张量交互平滑[6](@ref)
-#   s(bmi, bs = "tp") +                      # 薄板样条拟合BMI复杂关系[6](@ref)
-#   s(body_temp, bs = "cr", k = 8) +         # 体温的局部平滑
-#   sex_male +                               # 性别线性效应
-#   s(age_x_duration) +                      # 交互项平滑扩展[6](@ref)
-#   s(height_x_weight)    
-# # 心率与体温交互项平滑
-# # 使用bam加速计算（59万+样本）
-# 
-# 
-# gam_wf_fit <- gam_wf |>fit(formula=gam_formula, data=tr)
-
-```
-
-```{r}
 library(mgcv)
+
+gam_formula <- 
+  calories ~ 
+
+  s(age,k=10) +
+  #s(height,k=10) +
+  #s(weight,k=10) +
+  s(duration,k=10)  +
+  s(heart_rate,k=10) +
+  s(body_temp,k=10) +
+  s(bmi,k=10) +
+  te(bmi, age, k=c(5,5))+
+  te(height, weight,k=c(10,10)) +
+  # te(age, height,k = c(5,5))+
+  # te(age, weight,k = c(5,5))+
+  # te(weight, height,k = c(5,5))+
+  te(duration, heart_rate,k = c(5,5))+
+  #s(age_squared,k=10) +
+  #s(heart_rate_squared,k=10) + 
+ # s(body_temp_squared,k=10) +
+ # s(duration_squared,k=10) + 
+  #te(age, bmi,k=c(10,10))+
+  #te(duration,heart_rate,k=c(10,10))+
+  #te(heart_rate, body_temp,k=c(10,10)) 
+  #s(age_x_duration) + s(height_x_weight) +
+  #te(age, duration,k=c(10,10)) +
+    factor(sex_male) 
+
+  
+  
+  
 current_rec <- rec_v1 
 tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
 # rec <- recipe(mpg~displacement + horsepower +weight + acceleration + year, data =auto)|>
 #   step_YeoJohnson(all_numeric_predictors())
-
-gam_spec <- 
-  gen_additive_mod(
-    #select_features = FALSE,  # 禁用自动特征选择
-    #adjust_deg_free = tune()  # 允许自由度调优
-  ) %>%
-  set_engine(
-    "mgcv", 
-    method = "REML",         # 使用快速REML优化方法
-    #discrete = TRUE,          # 启用离散方法加速计算
-    nthreads = 12,            # 并行线程数
-    response = TRUE, # 强制结果为正数。
-    #family = gaussian()      # 指定分布族（根据任务调整）
-     family = Gamma(link = "log"),
-  ) %>%
-  set_mode("regression")     # 或 "classification"
-gam_formula <- 
-  calories ~ s(age) +
-  s(height) + s(weight) + s(duration)  +
-  s(heart_rate) + s(body_temp) + s(bmi) + s(age_squared) +
-  s(duration_squared) + s(age_x_duration) + s(height_x_weight) +
-  sex_male
-
-wf <- workflow() |>
-  add_recipe(current_rec)|>
-  add_model(gam_spec, formula = gam_formula) # it is the keyu for gam modelswf_model_2 <- wf |> fit(data =auto)
-
-
-gam_wf <- wf|> fit(data = tr)
-
-
-# gam_model <- bam(
-#   gam_formula,
-#   data = tmp_df,                    # 使用recipes预处理后的数据
-#   family = Gamma(link = "log"),            # 卡路里为正值，Gamma分布更优[4](@ref)
-#   method = "REML",                         # 自动平滑参数选择[8](@ref)
-#   discrete = TRUE,                         # 离散化加速
-#   nthreads = 8,                            # 并行计算
-#   gamma = 1.5                              # 增强正则化防过拟合[8](@ref)
-# )
-
+bam_spec <-   bam(
+  formula = gam_formula,  # 对交互项使用张量积te()
+  data = tmp_df,
+  response = TRUE, # 强制结果为正数。
+  family = Gamma(link = "log"),
+  method = "fREML",    # 快速REML估计，速度比REML快3-10倍[4,6](@ref)
+  discrete = TRUE,     # 启用离散化技术，降低内存占用
+  nthreads = 12,        # 建议设置为物理核心数（非超线程数）
+  chunk.size = 10**5 # 分块处理数据，减少内存峰值
+)
+bam_spec |>glance()
 # pred_gam <- predict(gam_wf, new_data = tr)
-aug_preds <- augment(gam_wf, te)#|>
+aug_preds <- augment(bam_spec, tr,type.predict="response")|>rename(.pred= .fitted)#|>
  # mutate(.pred=case_when(.pred<=0~0, .default=.pred))
 
 aug_preds |> rmsle(calories,.pred)|>print()
@@ -425,10 +421,7 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 
 ```
 
-```{r}
-pred_gam <- predict(gam_model, newdata =current_rec|>prep()|>bake(tr), type = "response")
-aug_preds <- tr|>mutate(.pred_gam = pred_gam)
-```
+
 
 
 ```{r}
