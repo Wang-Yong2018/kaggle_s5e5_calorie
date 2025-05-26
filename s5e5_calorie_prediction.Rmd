@@ -361,23 +361,32 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 
 ```{r}
 library(mgcv)
+current_rec <- rec_v1 
 
-gam_formula <- 
+tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
+# rec <- recipe(mpg~displacement + horsepower +weight + acceleration + year, data =auto)|>
+#   step_YeoJohnson(all_numeric_predictors())
+```
+
+
+```{r}
+base_formula <- 
   calories ~ 
 
-  s(age,k=10) +
+  s(age,k=15) +
   #s(height,k=10) +
   #s(weight,k=10) +
-  s(duration,k=10)  +
+  s(duration,k=15)  +
   s(heart_rate,k=10) +
   s(body_temp,k=10) +
   s(bmi,k=10) +
-  te(bmi, age, k=c(5,5))+
-  te(height, weight,k=c(5,5)) +
+  #te(bmi, age, k=c(5,5))+
+  #te(height, weight,k=c(5,5)) +
   # te(age, height,k = c(5,5))+
   # te(age, weight,k = c(5,5))+
   # te(weight, height,k = c(5,5))+
-  te(duration, heart_rate,k = c(5,5))+
+  #te(duration, heart_rate,k = c(5,5))+
+  #te(duration, weight,k=c(5,5))+
   #s(age_squared,k=10) +
   #s(heart_rate_squared,k=10) + 
  # s(body_temp_squared,k=10) +
@@ -389,56 +398,93 @@ gam_formula <-
   #te(age, duration,k=c(10,10)) +
     factor(sex_male) 
 
+v1_formula <-   calories ~  
+  s(age) +
+  #s(height,k=20) +
+  #s(weight,k=20) +
+  s(duration)  +
+  s(heart_rate,k=10) +
+  s(body_temp,k=10) +
+  s(bmi,k=20) +
+  factor(sex_male)  
+
+v2_formula <-
+  v1_formula |> 
+  update(.~. + ti(duration, heart_rate) +
+           ti(duration, heart_rate) +
+           ti(duration, body_temp) +
+           ti(duration, bmi)
+  )
+           
   
-  
-  
-current_rec <- rec_v1 
-tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
-# rec <- recipe(mpg~displacement + horsepower +weight + acceleration + year, data =auto)|>
-#   step_YeoJohnson(all_numeric_predictors())
+
+
+gam_formula <- v2_formula
+
 bam_spec <-   bam(
   formula = gam_formula,  # 对交互项使用张量积te()
   data = tmp_df,
   response = TRUE, # 强制结果为正数。
   family = Gamma(link = "log"),
+  select=TRUE,
   method = "fREML",    # 快速REML估计，速度比REML快3-10倍[4,6](@ref)
   discrete = TRUE,     # 启用离散化技术，降低内存占用
   nthreads = 12,        # 建议设置为物理核心数（非超线程数）
   chunk.size = 10**5 # 分块处理数据，减少内存峰值
 )
+bam_spec|> summary()
 bam_spec |>glance()
+
 # pred_gam <- predict(gam_wf, new_data = tr)
-aug_preds <- augment(bam_spec, tr,type.predict="response")|>rename(.pred= .fitted)#|>
+aug_preds <- augment(bam_spec, tmp_df,type.predict="response")|>rename(.pred= .fitted)#|>
  # mutate(.pred=case_when(.pred<=0~0, .default=.pred))
 
 aug_preds |> rmsle(calories,.pred)|>print()
 aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
   ggplot(aes(x=value, fill=name)) +
   geom_density(alpha=0.5)
-# 交叉验证
-#cv_results <- cv.gam(gam_model, nfolds=5, parallel=TRUE)
 
 
 ```
 
-
-
-
+##### diagnose
 ```{r}
-# 绘制残差诊断图
-#par(mfrow = c(2,2))
-#gam.check(gam_model, rep = 500)            # 检查残差分布与QQ图[6](@ref)
+
+bam_spec |>gam.check()
 ```
 
+#### purrr compare
 ```{r}
-cv_splits <- vfold_cv(juice(rec_v1|>prep()), v = 5)
-cv_results <- fit_resamples(
-  gam_model,
-  resamples = cv_splits,
-  metrics = rmsle_metric,
-  option=resample_option
-)
+library(furrr)
+get_result<- function(gam_form){
+  df <- tmp_df# |>head(100000)
+  bam_spec <-   bam(
+    formula = gam_form,  # 对交互项使用张量积te()
+    data = df,
+    response = TRUE, # 强制结果为正数。
+    family = Gamma(link = "log"),
+    method = "fREML",    # 快速REML估计，速度比REML快3-10倍[4,6](@ref)
+    discrete = TRUE,     # 启用离散化技术，降低内存占用
+    nthreads = 12,        # 建议设置为物理核心数（非超线程数）
+    chunk.size = 10**5 # 分块处理数据，减少内存峰值
+  ) 
+  aug_preds <- augment(bam_spec, df,type.predict="response")|>rename(.pred= .fitted)
+  rmsle_value <- aug_preds |> rmsle(calories,.pred)|>pull('.estimate',1)
+  return_value <- bam_spec|> glance() |> mutate(rmsle=rmsle_value)
+  return(return_value)
+}
+form_base=calories ~ s(age,k=15) +s(duration,k=15) + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=10) + factor(sex_male)
+form_dur_heart_weight= form_base|> update(.~. + te(duration, heart_rate,k = c(5,5)) +  te(duration, weight,k=c(5,5)))
+
+
+param_list<- list(base=form_base,
+                  v1=form_dur_heart_weight
+                  )
+mod_compare <-
+  param_list |>
+  map_df(\(x) get_result(x),.id='id')
 ```
+
 
 ## kaggle submission
 Prepare Submission ----
@@ -450,20 +496,21 @@ set.seed(1234)
 #plan(multisession,workers = 12)
 #final_model <- simple_wf_fit|>extract_workflow()
 
-final_model <- wf_lm |>fit(tr)#|>extract_workflow()
+#final_model <- wf_lm |>fit(tr)#|>extract_workflow()
+final_model <- bam_spec 
 final_predictions <- final_model |>
-   predict(new_data = test) #|>
+   predict(newdata = current_rec|>prep()|>bake(test),type="response") #|>
    #mutate(.pred=case_when(.pred<0~abs(.pred),
     #                      .default=.pred))
 #plan(sequential)
 
- # #Handle negative predictions
-  final_predictions <- final_predictions |>
-    mutate(.pred= ifelse(.pred< 0, 0, abs(.pred)))
+ # # #Handle negative predictions
+ #  final_predictions <- final_predictions |>
+ #    mutate(.pred= ifelse(.pred< 0, 0, abs(.pred)))
 
  # Save submission file
  submission |>
-   bind_cols(final_predictions)|>
+   bind_cols(.pred=final_predictions)|>
    mutate(Calories =.pred) |>
    select(-.pred)|>
    readr::write_csv("submission.csv")
@@ -476,7 +523,7 @@ final_predictions <- final_model |>
 ### score submit
 ```{r}
 # submit latest submission.csv
-system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "0.155"')
+system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "0.0914"')
 
 Sys.sleep(15)
 # get latest score 
