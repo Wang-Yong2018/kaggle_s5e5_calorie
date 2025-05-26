@@ -373,7 +373,7 @@ gam_formula <-
   s(body_temp,k=10) +
   s(bmi,k=10) +
   te(bmi, age, k=c(5,5))+
-  te(height, weight,k=c(10,10)) +
+  te(height, weight,k=c(5,5)) +
   # te(age, height,k = c(5,5))+
   # te(age, weight,k = c(5,5))+
   # te(weight, height,k = c(5,5))+
