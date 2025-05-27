@@ -373,10 +373,10 @@ tmp_df <- current_rec  |> prep() |>bake(new_data = tr)
 base_formula <- 
   calories ~ 
 
-  s(age,k=15) +
-  #s(height,k=10) +
-  #s(weight,k=10) +
-  s(duration,k=15)  +
+  s(age,k=10) +
+  s(height,k=10) +
+  s(weight,k=10) +
+  s(duration,k=10)  +
   s(heart_rate,k=10) +
   s(body_temp,k=10) +
   s(bmi,k=10) +
@@ -396,7 +396,7 @@ base_formula <-
   #te(heart_rate, body_temp,k=c(10,10)) 
   #s(age_x_duration) + s(height_x_weight) +
   #te(age, duration,k=c(10,10)) +
-    factor(sex_male) 
+  factor(sex_male) 
 
 v1_formula <-   calories ~  
   s(age) +
@@ -468,10 +468,10 @@ get_result<- function(gam_form){
     nthreads = 12,        # 建议设置为物理核心数（非超线程数）
     chunk.size = 10**5 # 分块处理数据，减少内存峰值
   ) 
-  aug_preds <- augment(bam_spec, df,type.predict="response")|>rename(.pred= .fitted)
-  rmsle_value <- aug_preds |> rmsle(calories,.pred)|>pull('.estimate',1)
-  return_value <- bam_spec|> glance() |> mutate(rmsle=rmsle_value)
-  return(return_value)
+  #aug_preds <- augment(bam_spec, df,type.predict="response")|>rename(.pred= .fitted)
+  #rmsle_value <- aug_preds |> rmsle(calories,.pred)|>pull('.estimate',1)
+  #return_value <- bam_spec|> glance() |> mutate(rmsle=rmsle_value)
+  return(bam_spec)
 }
 form_base=calories ~ s(age,k=15) +s(duration,k=15) + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=10) + factor(sex_male)
 form_dur_heart_weight= form_base|> update(.~. + te(duration, heart_rate,k = c(5,5)) +  te(duration, weight,k=c(5,5)))
@@ -522,19 +522,19 @@ final_predictions <- final_model |>
 
 ### score submit
 ```{r}
-# submit latest submission.csv
-system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "0.0914"')
-
-Sys.sleep(15)
-# get latest score 
-system('kaggle competitions submissions -q -c playground-series-s5e5')
+# # submit latest submission.csv
+# system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "0.0914"')
+# 
+# Sys.sleep(15)
+# # get latest score 
+# system('kaggle competitions submissions -q -c playground-series-s5e5')
 
 ```
 
 ### notebook convert
 ```{r}
- library(rmd2jupyter)
- rmd2jupyter('podcast_listening_time.Rmd')
+ # library(rmd2jupyter)
+ # rmd2jupyter('calories_predict.Rmd')
 ```
 
 
