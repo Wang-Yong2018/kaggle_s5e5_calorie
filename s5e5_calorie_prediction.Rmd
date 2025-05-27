@@ -449,13 +449,19 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 
 ##### diagnose
 ```{r}
+mod_list$base |>augment(newdata = tr) |> rename(.pred= .fitted) |>mutate(.residual=log1p(calories)-log1p(.pred)) -> tmp
+tmp|>ggplot(aes(x=age, y=.residual)) +geom_smooth()
+#after heart_rate >125 has high residuals
 
-bam_spec |>gam.check()
 ```
 
 #### purrr compare
 ```{r}
 library(furrr)
+library(mgcv)
+current_rec <- rec_v1 
+
+tmp_df <- current_rec  |> prep() |>bake(new_data = tr) 
 get_result<- function(gam_form){
   df <- tmp_df# |>head(100000)
   bam_spec <-   bam(
@@ -463,6 +469,7 @@ get_result<- function(gam_form){
     data = df,
     response = TRUE, # 强制结果为正数。
     family = Gamma(link = "log"),
+    select=TRUE,
     method = "fREML",    # 快速REML估计，速度比REML快3-10倍[4,6](@ref)
     discrete = TRUE,     # 启用离散化技术，降低内存占用
     nthreads = 12,        # 建议设置为物理核心数（非超线程数）
@@ -473,19 +480,55 @@ get_result<- function(gam_form){
   #return_value <- bam_spec|> glance() |> mutate(rmsle=rmsle_value)
   return(bam_spec)
 }
+
+get_rmsle <- function(model, df) {
+  tmp_df <-df 
+  aug_preds <- augment(model, tmp_df,type.predict="response")|>rename(.pred= .fitted)
+  result <- aug_preds |> rmsle(calories,.pred)
+  return(result)
+}
+
 form_base=calories ~ s(age,k=15) +s(duration,k=15) + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=10) + factor(sex_male)
 form_dur_heart_weight= form_base|> update(.~. + te(duration, heart_rate,k = c(5,5)) +  te(duration, weight,k=c(5,5)))
 
+v3_formula <-   calories ~s(age) +  + s(duration)  + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=20) + factor(sex_male)  
 
-param_list<- list(base=form_base,
-                  v1=form_dur_heart_weight
+v4_formula <- v3_formula |> update(.~. + ti(duration, heart_rate) + ti(duration, heart_rate) + ti(duration, body_temp) +       ti(duration, bmi)   )
+
+param_list<- list(base=form_base, # 0.9833
+                  #v1=form_dur_heart_weight # bad module  0.9612. worse than base
+                  v3 = v3_formula,
+                  v4= v4_formula
                   )
-mod_compare <-
+mod_list <-
   param_list |>
-  map_df(\(x) get_result(x),.id='id')
+  map(\(x) get_result(x))
+mod_list|>saveRDS(file='mod_list.rds')
+mod_list|>map_dfr(\(x) glance(x),.id='name')
+
 ```
 
+##### diagnose
+```{r}
+col_names<- tmp_df |>names()
+mod_list <- readRDS(file='mod_list.rds')
+plot_df <- mod_list$v4 |>
+  augment(newdata = tmp_df,type.predict="response") |> 
+  rename(.pred= .fitted) |>
+  mutate(.residual=log1p(calories)-log1p(.pred)) 
 
+for (col in col_names) {
+  plot_df |>ggplot(aes(x=.data[[col]], y=.residual)) +geom_smooth() |> print()
+  
+}
+#after heart_rate >125 has high residuals *** very important it might be sharp change. need consider the sline mode. also heart_rate_squared has similar impact and heavier.
+## heart_rate improved a bit at v4 model
+
+# bmi at right side, when value increase the .residual change bigger.
+#height, weight has high residual 
+
+
+```
 ## kaggle submission
 Prepare Submission ----
 
