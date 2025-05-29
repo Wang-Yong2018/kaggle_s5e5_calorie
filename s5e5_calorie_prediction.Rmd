@@ -447,13 +447,7 @@ aug_preds|>select(.pred,calories) |> pivot_longer(cols=everything()) |>
 
 ```
 
-##### diagnose
-```{r}
-mod_list$base |>augment(newdata = tr) |> rename(.pred= .fitted) |>mutate(.residual=log1p(calories)-log1p(.pred)) -> tmp
-tmp|>ggplot(aes(x=age, y=.residual)) +geom_smooth()
-#after heart_rate >125 has high residuals
 
-```
 
 #### purrr compare
 ```{r}
@@ -488,17 +482,58 @@ get_rmsle <- function(model, df) {
   return(result)
 }
 
-form_base=calories ~ s(age,k=15) +s(duration,k=15) + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=10) + factor(sex_male)
+
+
+form_base=calories ~ s(age,k=15) +s(duration,k=25) + s(heart_rate,k=30) + s(body_temp,k=15,bs='cr') + s(bmi, bs = "ps", k = 50, m = c(2, 2)) + factor(sex_male)
+
 form_dur_heart_weight= form_base|> update(.~. + te(duration, heart_rate,k = c(5,5)) +  te(duration, weight,k=c(5,5)))
 
 v3_formula <-   calories ~s(age) +  + s(duration)  + s(heart_rate,k=10) + s(body_temp,k=10) + s(bmi,k=20) + factor(sex_male)  
 
 v4_formula <- v3_formula |> update(.~. + ti(duration, heart_rate) + ti(duration, heart_rate) + ti(duration, body_temp) +       ti(duration, bmi)   )
+v9_formula <- calories ~
+  s(age, k = 10) + # OK
+  s(duration, k = 20) + # OK
+  s(heart_rate, k = 25) + # Was k=20, edf=18.69, p=0.010. Increase.
+  s(body_temp, k = 15) + # OK
+  s(bmi, k = 30) + # Was k=25, edf=20.03, p<2e-16. Increase.
 
+  factor(sex_male) + # Or your actual dummy variable name
+
+  # ti(duration, heart_rate, weight, by = age):
+  # Was k=c(6,6,6) -> k'=(6-1)^3 = 125, edf=120.07, p<2e-16.
+  # Try k=c(7,7,7) -> k'=(7-1)^3 = 216.
+  ti(duration, heart_rate, weight, by = age, k = c(7, 7, 7)) +
+
+  ti(duration, body_temp, k = c(7, 7)) + # OK with k'=(7-1)^2 = 36
+
+  # ti(duration, bmi):
+  # Was k=c(7,7) -> k'=(7-1)^2 = 36, edf=33.71, p=0.045.
+  # Try k=c(8,8) -> k'=(8-1)^2 = 49.
+  ti(duration, bmi, k = c(8, 8)) +
+
+  # ti(bmi, duration, heart_rate):
+  # Was k=c(6,6,6) -> k'=(6-1)^3 = 125, edf=122.62, p=0.005.
+  # Try k=c(7,7,7) -> k'=(7-1)^3 = 216.
+  ti(bmi, duration, heart_rate, k = c(7, 7, 7))
+
+v11b_formula <-  form_base|> update(.~.+   ti(duration, heart_rate, weight, by = age, k = c(9, 9, 9)) +
+                                      ti(duration, body_temp, k = c(7, 7)) +
+                                      ti(duration, bmi, k = c(12, 12)) +
+                                      ti(bmi, duration, heart_rate, k = c(9, 9, 9)))
+
+v12_formula <- form_base |>update(.~. + ti(duration, heart_rate, weight, by = age, bs = c("ps", "ps", "ps"), k = c(7, 7, 7)) + 
+                                    ti(duration, body_temp, k = c(7,7), bs = c("cr", "cr")) + 
+                                    ti(duration, bmi, bs = c("ps", "ps"), k = c(8, 8)) +
+                                      # ti(bmi, duration, heart_rate): Similar logic.
+                                    ti(bmi, duration, heart_rate, bs = c("ps", "ps", "ps"), k = c(7, 7, 7)))
+                                    
 param_list<- list(base=form_base, # 0.9833
                   #v1=form_dur_heart_weight # bad module  0.9612. worse than base
-                  v3 = v3_formula,
-                  v4= v4_formula
+                  #v3 = v3_formula,
+                  #v4= v4_formula
+                  v11b_formula =v11b_formula,
+                  v12 = v12_formula
                   )
 mod_list <-
   param_list |>
