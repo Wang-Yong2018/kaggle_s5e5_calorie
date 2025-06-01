@@ -35,3 +35,5 @@ po/*~
 rsconnect/
 submission.csv.zip
 submission.csv
+mod_list.rds
+calories-predictions-eda-xgboost-catboost-r.Rmd
