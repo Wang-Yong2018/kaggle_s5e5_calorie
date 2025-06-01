@@ -1,0 +1,840 @@
+---
+title: "Calories Predictions | EDA-XGBoost-CatBoost | R"
+date: "2025-May-01"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 6
+    code_folding: show
+    theme: cosmo
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 5)
+
+```
+
+
+## About the Data set:
+
+
+## Import libraries
+
+```{r import-libraries}
+
+install.packages('remotes')
+#remotes::install_github('catboost/catboost', subdir = 'catboost/R-package')
+
+library("tidyverse")
+library("janitor")
+library("skimr")
+library("scales")
+library("GGally")
+library("kableExtra")
+library("ggcorrplot")
+library("flextable")
+
+
+
+
+library("tidymodels")
+library("stacks")
+library("doParallel")
+library("bonsai")
+library("finetune")
+library("themis")
+library("rlang")
+library("vip")
+library("mltools")
+library("catboost")
+
+theme_set(theme_light())
+
+```
+
+
+## Import data
+
+```{r import-data}
+
+orig_df <- read_csv("/kaggle/input/calories-burnt-prediction/calories.csv") |> 
+   clean_names()
+ 
+train_df <- read_csv("/kaggle/input/playground-series-s5e5/train.csv") |> 
+   clean_names()
+ 
+test_df <- read_csv("/kaggle/input/playground-series-s5e5/test.csv") |> 
+   clean_names()
+ 
+sample_submission <- read_csv("/kaggle/input/playground-series-s5e5/sample_submission.csv")
+
+names(orig_df) == names(train_df)
+
+names(orig_df) <- names(train_df)
+
+names(orig_df) == names(train_df)
+
+train_df <- bind_rows(train_df, orig_df)
+
+```
+
+
+
+
+## EDA
+
+### Basic Summary statistics
+
+```{r}
+
+train_df |>
+  skim() |>
+  kbl(format = "html",
+      caption = "Variables Dignosis | Train",
+      digits = 2) |>
+  kable_classic(full_width = F)
+
+
+test_df |>
+  skim() |>
+  kbl(format = "html",
+      caption = "Variables Dignosis | Train",
+      digits = 2) |>
+  kable_classic(full_width = F)
+
+```
+
+-   One(1) Variable type character
+
+    - "sex": Will be converted to factor data type:  
+
+- 8(eight)  Variable type Numeric + the target Variable.
+
+    - id:
+    - age: ranges from 41 to 79,
+    - height: from 126 to 222,
+    - weight: from 36 to 87,
+    - duration of workout: from 1 to 30,
+    - heart_rate: from 67 to 103,
+    - body_temp: from 37.1 to 41.5 and
+    - calories: from 1 to 314.
+
+
+- NO missing Values, No imputation process.
+
+
+### Convert character variables to factor data type and remove id column!
+
+```{r}
+
+
+train_df <- train_df |>  
+  mutate(across(where(is.character), as.factor)) |> 
+  select(-id)
+
+
+test_df <- test_df |> 
+  mutate(across(where(is.character), as.factor)) |> 
+  select(-id)
+
+```
+
+
+
+### Target variable distribution 
+
+
+```{r, fig.width = 12, fig.height = 5}
+
+
+train_df |>
+  select(calories) |>
+  ggplot(aes(x = calories)) +
+  geom_histogram(color = "black", fill = "gray") +
+  geom_vline(aes(xintercept = mean(calories)), color = "red")+
+  labs(title = "Target variable distribution | calories",
+       x = "Calories",
+       y = "Counts")
+
+
+```
+
+
+### Target variable distribution by Sex
+
+```{r, fig.width = 12, fig.height = 4}
+
+
+sex_color <- c(
+    "male" =  "#2986cc",
+    "female" = "#c90076"
+  )
+
+train_df |>
+  select(sex, calories) |>
+  ggplot(aes(x = calories, y = sex, fill = sex)) +
+  geom_boxplot(
+    color = "gray50",
+    outlier.colour = "darkred",
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = sex_color) +
+  labs(title = "Target variable distribution by Sex",
+       x = "Calories",
+       y = "Sex")
+  
+```
+
+
+
+### Age VS Target variable by Sex
+
+```{r, fig.width = 12, fig.height = 4}
+
+train_df |>
+  select(age, sex, calories) |>
+  ggplot(aes(x = calories, y = age, fill = sex)) +
+  geom_boxplot(
+    color = "gray50",
+    outlier.colour = "darkred",
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = sex_color) +
+  labs(title = "Age VS Target variable by Sex",
+       x = "calories",
+       y = "Age",
+       fill = "Sex")
+
+```
+
+
+
+### Proportion of Sex
+
+```{r, fig.width = 12, fig.height = 4}
+
+train_df |>
+  count(sex, name = "counts" , sort = T) |>
+  mutate(prop = round(counts / sum(counts) * 100, 2),
+         label = str_c(sex, " ", prop)) |>
+  ggplot(aes(sex, counts)) +
+  geom_col(
+    color = "black",
+    width = 0.5,
+    alpha = 0.5,
+    aes(fill = factor(sex)),
+    show.legend = FALSE
+  ) +
+  geom_text(
+    aes(label = str_c(prop, "%"), group = factor(sex)),
+    size = 4,
+    hjust = 1.2,
+    show.legend = FALSE
+  ) +
+  coord_flip() +
+  scale_fill_manual (values =  sex_color) +
+  labs(title = "Proportion of Sex",
+       caption = "Data Source: Kaggel.com | Predict Calorie Expenditure",
+       fill = "")
+
+
+```
+
+
+### Age distribution by SEX
+
+
+```{r, fig.width = 12, fig.height = 5}
+
+
+train_df |>
+  ggplot(aes(age, fill = sex)) +
+  geom_histogram(position = position_dodge(), color = "white", bins = 30, alpha = 0.6, show.legend = FALSE) +
+  facet_wrap(vars(sex), scales = "free") +
+  scale_fill_manual (values =  sex_color) +
+  theme(
+    strip.background = element_rect(fill = "white"),
+    strip.background.x = element_rect(colour = "white"),
+    strip.background.y = element_rect(colour = "white"),
+    strip.text = element_text(
+      color = "black",
+      face = "bold",
+      size = 8
+    )
+  )+
+labs(title = "Age distribution by Sex",
+     caption = "Data Source: Kaggel.com | Predict Calorie Expenditure",
+     x = "Age",
+     y = "Counts",
+     fill = "Sex")
+
+```
+
+
+### Heart rate VS Weight by Sex
+
+```{r}
+
+train_df |>
+  
+  ggplot(aes(x = heart_rate, y = weight,  color = sex)) +
+  geom_point(
+    show.legend = FALSE,
+    size = 1.5,
+  ) +
+  geom_smooth(aes(color = sex), show.legend = FALSE) +
+  scale_color_manual (values =  sex_color) +
+  labs(
+    title = "Heart rate VS Weight by Sex",
+    caption = "Data Source: Kaggel.com | Predict Calorie Expenditure",
+    x = "Heart rate",
+    y = "Weight"
+  )
+
+```
+
+
+### Height VS Weight by Sex
+
+```{r}
+
+train_df |>
+  ggplot(aes(x = height, y = weight,  color = sex)) +
+  geom_point(
+    show.legend = FALSE,
+    size = 1.5,
+    alpha = 0.6
+  ) +
+  geom_smooth(aes(color = sex), show.legend = FALSE) +
+  scale_color_manual (values =  sex_color) +
+  labs(
+    title = "Height VS Weight by Sex",
+    caption = "Data Source: Kaggel.com | Predict Calorie Expenditure",
+    x = "Heart rate",
+    y = "Weight"
+  )
+
+```
+
+
+### Duration Distribution vs Sex
+
+
+```{r, fig.width = 9, fig.height = 5}
+
+
+train_df |>
+  select(duration, sex) |>
+  ggplot(aes(x = duration, fill = sex)) +
+  geom_histogram(color = "black", alpha = 0.6, position = position_dodge(), show.legend = FALSE) +
+  geom_vline(aes(xintercept = mean(duration)), color = "red")+
+  scale_fill_manual (values =  sex_color) +
+  labs(title = "Duration Distribution",
+       x = "Duration",
+       y = "Counts")
+
+
+```
+
+
+### Duration Distribution vs Weight
+
+
+```{r, fig.width = 9, fig.height = 5}
+
+
+train_df |>
+  select(duration, weight) |>
+  ggplot(aes(x = as.factor(duration), y = weight)) +
+  geom_boxplot(aes(fill = duration), alpha = 0.6, show.legend = FALSE) +
+  labs(title = "Duration Distribution vs Weight",
+       x = "Duration",
+       y = "weight")
+
+
+```
+
+
+
+### Correlation Matrix (Train Dataset)
+
+```{r}
+
+train_df |>
+  select(-c(calories, sex)) |>
+  cor() |>
+  ggcorrplot(
+    outline.col = "white",
+    ggtheme = ggplot2::theme_minimal,
+    colors = c("darkblue", "white", "red"),
+    tl.cex = 7,
+    lab = TRUE,
+    lab_size = 3,
+    lab_col = "black",
+    show.legend = TRUE
+  ) +
+  theme(
+    plot.background = element_rect(fill = "#edf2f7", color = "white"),
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0.5, size = 10)
+  ) +
+  labs(title = "Correlation Matrix (Train Dataset)")
+
+
+
+```
+
+### Correlation Matrix (Test Dataset)
+
+```{r}
+
+test_df |>
+  select(-c(sex)) |>
+  cor() |>
+  ggcorrplot(
+    outline.col = "white",
+    ggtheme = ggplot2::theme_minimal,
+    colors = c("darkblue", "white", "red"),
+    tl.cex = 7,
+    lab = TRUE,
+    lab_size = 3,
+    lab_col = "black",
+    show.legend = TRUE
+  ) +
+  theme(
+    plot.background = element_rect(fill = "#edf2f7", color = "white"),
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0.5, size = 10)
+  ) +
+  labs(title = "Correlation Matrix (Test Dataset)")
+
+
+
+```
+
+
+
+### Pair Plot by Sex
+
+```{r, fig.width=9, fig.height= 9, fig.align="center"}
+
+train_df |>
+  group_by(calories) |>
+  slice_sample(prop = 0.05) |>
+  ungroup() |>
+  ggpairs(
+    aes(color = sex),
+    lower = list(continuous = wrap(
+      "smooth",
+      alpha = 0.2,
+      size = 0.5,
+      color = "#FBDFB0"
+    )),
+    diag = list(continuous = "barDiag"),
+    upper = list(continuous = wrap("cor", size = 3))
+  ) +
+  scale_color_manual(values = sex_color) +
+  scale_fill_manual(values = sex_color) +
+  theme(
+    axis.text = element_text(size = 8),
+    panel.background = element_rect(fill = "white"),
+    strip.background = element_rect(fill = "white"),
+    strip.background.x = element_rect(colour = "black"),
+    strip.background.y = element_rect(colour = "black"),
+    strip.text = element_text(
+      color = "black",
+      face = "bold",
+      size = 8
+    )
+  ) +
+  labs(caption = "Data Source: Kaggle | Predict Calorie Expenditure",
+       x = NULL,
+       y = NULL)
+
+
+```
+
+
+# Model
+
+### Feature Engineering
+
+
+```{r}
+
+preproc_fun <- function(df) {
+  df <- df |>
+   mutate(
+    #  bmi = weight / ((height / 100)^2),
+     # height_log = log10(height),
+      heart_rate_vs_duration = heart_rate / duration,
+     # log_heart_rate_duration = log10(heart_rate) / duration,
+     # body_temp_vs_duration = body_temp / duration,
+     # weight_vs_duration = weight / duration,
+     # age_vs_heart_rate = age / heart_rate,
+     # age_vs_Weight = age / weight,
+     # age_vs_duration = age / duration,
+     # weight_vs_heart_rate = weight / heart_rate,
+      heart_stress = heart_rate * duration,
+     # temp_deviation = body_temp - 36.9,
+      temp_deviation_log = log10(body_temp) - log10(36.9)
+     # body_temp_log_heart_rate_diff = body_temp - log10(heart_rate),
+     # weight_cat = as.numeric(cut(
+     #   weight,
+     #   breaks = c(34, 60, 75, 90, 105, Inf),
+      #  include.lowest = T,
+      #  labels = c(0, 1, 2, 3, 4)
+    #  )),
+     # age_group = as.numeric(cut(
+      #  age,
+      #  breaks = c(18, 25, 40, 60, Inf),
+       # include.lowest = T,
+       # labels = c(1, 2, 3, 4)
+    #  )),
+     # bmi_cat = case_when(bmi < 18.5 ~ 0,
+       #                   bmi < 25 ~ 1,
+        #                  bmi < 30 ~ 2,
+        #                  bmi >= 30 ~ 3)
+      #
+   )
+  
+  return(df)
+  
+}
+
+train_df_preproc <- preproc_fun(train_df) |>
+  mutate(calories = log(calories)) |> as.data.frame()
+
+test_df_preproc <- preproc_fun(test_df) |> as.data.frame()
+
+
+glimpse(train_df_preproc)
+
+```
+
+
+
+## Create custom Metric (rmsle)
+
+
+```{r custom-metric-rmsle}
+
+
+
+rmsle_impl <- function(truth, estimate, case_weights = NULL) {
+  sqrt(mean((log(truth + 1) - log(estimate + 1)) ^ 2))
+}
+
+####
+
+rmsle_vec <-
+  function(truth,
+           estimate,
+           na_rm = TRUE,
+           case_weights = NULL,
+           ...) {
+    check_numeric_metric(truth, estimate, case_weights)
+    
+    if (na_rm) {
+      result <- yardstick_remove_missing(truth, estimate, case_weights)
+      
+      truth <- result$truth
+      estimate <- result$estimate
+      case_weights <- result$case_weights
+    } else if (yardstick_any_missing(truth, estimate, case_weights)) {
+      return(NA_real_)
+    }
+    
+    rmsle_impl(truth, estimate, case_weights = case_weights)
+  }
+
+
+####
+
+rmsle <- function(data, ...) {
+  UseMethod("rmsle")
+}
+
+####
+
+rmsle <- new_numeric_metric(rmsle, direction = "minimize")
+
+####
+
+rmsle.data.frame <-
+  function(data,
+           truth,
+           estimate,
+           na_rm = TRUE,
+           case_weights = NULL,
+           ...) {
+    numeric_metric_summarizer(
+      name = "rmsle",
+      fn = rmsle_vec,
+      data = data,
+      truth = !!enquo(truth),
+      estimate = !!enquo(estimate),
+      na_rm = na_rm,
+      case_weights = !!enquo(case_weights)
+    )
+  }
+
+
+metric_set(rmsle)
+
+
+
+```
+
+
+## Xgboost Model
+
+### Set a recips, Model specification, Create a workflow and fit
+
+
+```{r xgboost-finalize}
+
+SEED = 1
+
+set.seed(SEED)
+
+train_data <- train_df_preproc |>  
+  slice_sample(prop = 1) 
+
+### Set a recipe
+
+xgb_rec <-
+  recipe(calories ~ ., data = train_data) |> 
+  step_dummy(all_nominal_predictors()) |>
+  step_YeoJohnson(all_numeric_predictors())
+
+test_df_preproc_xgb <- xgb_rec |>
+prep() |>
+bake(new_data = test_df_preproc) 
+
+### Model specification, From Optuna! my Python Version!
+
+xgb_spec <-
+  boost_tree(
+    trees = 100,
+    tree_depth = 11,
+    learn_rate = 0.01580869909042234,
+    mtry =  0.8907142856194438,
+    min_n = 23,
+    loss_reduction = 0.0028007536918441523,
+    sample_size = 0.9198431651522134,
+  ) |>
+  set_engine(
+    engine = "xgboost",
+    reg_alpha = 2.3612969223243963,
+    reg_lambda = 5.910460318781385,
+    colsample_bytree = 0.6198651288579313,
+    counts = FALSE
+  ) |>
+  set_mode(mode = "regression")
+
+
+### Create a workflow
+
+xgb_wf <- workflow() |>
+  add_recipe(xgb_rec) |>
+  add_model(xgb_spec)
+
+
+```
+
+
+### Fit
+
+```{r final-fit}
+
+
+fit <- xgb_wf |> 
+  fit(train_data)
+
+
+```
+
+
+### Variable Importance
+
+```{r}
+
+fit |> 
+  extract_fit_engine() |> 
+  vip(num_features = ncol(train_data),
+    geom = "col",
+    aesthetics = list(
+      width = 0.7)) +
+  theme(
+        plot.background = element_rect(fill = "white"),
+        plot.title.position = "panel",
+        plot.title = element_text(size = 18, hjust = 0.5),
+        plot.caption.position = "plot",
+        plot.caption = element_text(size = 8, color = "grey"),
+        panel.grid = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14)
+      ) +
+  labs(
+    title = "Variable Importance",
+    x = NULL,
+    y = "Importance"
+  )
+
+
+```
+
+### Predict and Submission
+
+```{r submission}
+
+submit <- predict(fit |>  extract_fit_parsnip(), test_df_preproc_xgb) |> 
+  mutate(.pred = if_else(.pred < 1, 1, .pred))
+
+  
+skim(submit)
+
+submit |> 
+  head()
+
+sample_submission |>
+  mutate(
+    Calories = exp(submit$.pred)
+  ) |>
+  write_csv("submission_xgb.csv")
+
+```
+
+## Catboost Model
+
+### Data Split | CatBoost 
+
+```{r}
+
+set.seed(SEED)
+train_df_preproc_sample <- 
+  train_df_preproc |> 
+  group_by(calories) |> 
+  slice_sample(prop = 1) |> 
+  ungroup()
+
+set.seed(SEED)
+
+train_data_split <-
+  initial_split(train_df_preproc_sample, prop = 0.9)
+
+train_data <- training(train_data_split)
+test_data  <- testing(train_data_split)
+
+train_pool <- catboost.load_pool(
+  data = train_data |> select(-calories),
+  label = train_data |> select(calories)
+)
+
+test_pool <- catboost.load_pool(
+  data = test_data |> select(-calories),
+  label = test_data |> select(calories)
+)
+
+```
+
+### Fit | CatBoost 
+
+```{r final-fit-cat}
+
+
+# Tuning was done by Optuna! my Python Notebook!!
+
+fit_params <- list(
+  iterations = 7000,
+  learning_rate = 0.01567042862743858,
+  depth = 9,
+  l2_leaf_reg = 8.616980968071514,
+  random_strength = 0.639937069565962, 
+  bagging_temperature = 5.1161659109288635,
+  metric_period = 100
+)
+
+model <- catboost.train(train_pool, 
+                        params = fit_params 
+                        )
+
+val <- catboost.predict(model, test_pool)
+
+mltools::rmse(val, test_data$calories)
+
+```
+
+
+### Variable Importance | CatBoost 
+
+```{r vimp-cat}
+
+feature_importance <- catboost.get_feature_importance(model,
+                                                      pool = train_pool) |> 
+  as_tibble(rownames = "Feature")
+
+
+feature_importance |> 
+ggplot(aes(
+  x = fct_reorder(Feature, V1),
+  y = V1
+)) +
+geom_col() +
+coord_flip() +
+theme(legend.position = "none") +
+  labs(
+    title = "Variable Importance | CatBoost",
+    x = NULL,
+    y = NULL)
+
+
+
+
+```
+
+### Predict and Submission | CatBoost 
+
+```{r predict-cat}
+
+submit <- catboost.predict(model, catboost.load_pool(test_df_preproc)) 
+
+submit <- exp(submit)
+
+submit <- if_else(submit < 1, 1, submit)
+
+skim(submit)
+
+head(submit)
+
+```
+### Submission | CatBoost 
+
+```{r submission-cat}
+sample_submission |>
+  mutate(
+    Calories = submit
+  ) |>
+  write_csv("submission.csv")
+
+```
+
+## Fin
+
+- To reduce the rmsle score, further EDA, tweaking, and transformation are needed!
+
+
+I appreciate you taking the time to read! I welcome your feedback.

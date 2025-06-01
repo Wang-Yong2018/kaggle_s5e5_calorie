@@ -66,7 +66,7 @@ rmsle.data.frame <- function(data, truth, estimate, na_rm = TRUE,case_weights=NU
   )
 }
 
-rmsle_metric <- metric_set(rmse,rsq,rmsle)
+rmsle_metric <-  yardstick::metric_set(yardstick::rmse,yardstick::rsq, rmsle)
 
 ```
 
@@ -122,7 +122,9 @@ target_name <- 'calories'
 ### loading data
 
 ```{r}
-
+origin <- readr::read_csv(file.path(data_path,'calories.csv'),
+                          show_col_types=FALSE)|> 
+  janitor::clean_names()|>rename(id=user_id, sex=gender)
 train<- 
   readr::read_csv(file.path(data_path, 'train.csv'),
                   show_col_types = FALSE)|>
@@ -132,6 +134,8 @@ test <-
                   show_col_types = FALSE)|>
    janitor::clean_names()
 submission <-  readr::read_csv(file.path(data_path, 'sample_submission.csv'),show_col_types = FALSE)
+
+train <-train|>bind_rows(origin)
 ```
 
 ### quick skim
@@ -522,18 +526,123 @@ v11b_formula <-  form_base|> update(.~.+   ti(duration, heart_rate, weight, by =
                                       ti(duration, bmi, k = c(12, 12)) +
                                       ti(bmi, duration, heart_rate, k = c(9, 9, 9)))
 
-v12_formula <- form_base |>update(.~. + ti(duration, heart_rate, weight, by = age, bs = c("ps", "ps", "ps"), k = c(7, 7, 7)) + 
-                                    ti(duration, body_temp, k = c(7,7), bs = c("cr", "cr")) + 
+v12_formula <- form_base |>update(.~. + ti(duration, heart_rate, weight, by = age, bs = c("ps", "ps", "ps"), k = c(7, 7, 7)) +
+                                    ti(duration, body_temp, k = c(7,7), bs = c("cr", "cr")) +
                                     ti(duration, bmi, bs = c("ps", "ps"), k = c(8, 8)) +
                                       # ti(bmi, duration, heart_rate): Similar logic.
                                     ti(bmi, duration, heart_rate, bs = c("ps", "ps", "ps"), k = c(7, 7, 7)))
                                     
+v11_converged_formula_structure <- calories ~
+  s(age, k = 10) +                       # OK in v11 check
+  s(duration, k = 25) +                  # OK in v11 check (assuming k=25 if k'=24)
+  s(heart_rate, k = 30) +                # OK in v11 check (p=0.825 if k'=29 from k=30)
+  s(body_temp, k = 15) +                 # Borderline (p=0.07) in v11 check
+  s(bmi, k = 40) +                       # PROBLEM with bs="tp" in v11 check
+
+  factor(sex_male) +
+
+  ti(duration, heart_rate, weight, by = age, k = c(9, 9, 9)) + # Problem with bs="tp" in v11
+  ti(duration, body_temp, k = c(7, 7)) +                     # Borderline (p=0.085) in v11 check
+  ti(duration, bmi, k = c(12, 12)) +                         # Problem with bs="tp" in v11
+  ti(bmi, duration, heart_rate, k = c(9, 9, 9))               # Problem with bs="tp" in v11
+
+v13_formula <- calories ~
+  s(age, k = 10) +
+  s(duration, k = 25) +
+  s(heart_rate, k = 30) +
+  s(body_temp, k = 15) + # Consider bs="cr" if p=0.07 for bs="tp" is a concern, otherwise keep tp
+  s(bmi, bs = "ps", k = 40, m = c(2, 2)) + # BIG CHANGE: P-spline for s(bmi). Use k from v11.
+
+  factor(sex_male) +
+
+  # Keep other ti terms with bs="tp" (default marginals) and their v11 k-values for now
+  ti(duration, heart_rate, weight, by = age, k = c(9, 9, 9)) +
+  ti(duration, body_temp, k = c(7, 7)) +
+  ti(duration, bmi, k = c(12, 12)) +
+  ti(bmi, duration, heart_rate, k = c(9, 9, 9))
+v14_formula <- calories ~ s(age, k = 10) + s(duration, k = 25) +
+  s(heart_rate, k = 30) + # Keep k from v13 for now
+  s(body_temp, k = 15) + s(weight, k = 30) + # NEW main effect (start with a generous k)
+  s(height, k = 20) + # NEW main effect (height might be simpler)
+  factor(sex_male) +
+  # Reformulate interactions:
+  # Original: ti(duration, heart_rate, weight, by = age, k = c(9,9,9)) - This can stay as it uses weight directly.
+  ti(duration, heart_rate, weight, by = age, k = c(9,9,9)) +
+  ti(duration, body_temp, k = c(7,7)) +
+  # Original: ti(duration, bmi, k = c(12,12))
+  # New: ti(duration, weight, k = c(10,10)) + ti(duration, height, k = c(8,8)) (example k values)
+  # Or a 3-way: ti(duration, weight, height, k = c(7,7,7))
+  # Let's start with separate 2-ways and see.
+  ti(duration, weight, k = c(10, 10)) +
+  ti(duration, height, k = c(8, 8)) +
+  # Original: ti(bmi, duration, heart_rate, k = c(9,9,9))
+  # New: ti(weight, duration, heart_rate, k = c(8,8,8)) + possibly ti(height, duration, heart_rate, k=c(7,7,7))
+  # Let's try replacing bmi with weight here.
+  ti(weight, duration, heart_rate, k = c(8,8,8)) +
+
+  # Optional new interaction:
+  ti(weight, height, k = c(8,8)) # Interaction between weight and height
+
+v15_formula <- calories ~
+  s(age, k = 10) +
+  s(duration, k = 25) +
+  s(heart_rate, k = 30) +
+  s(body_temp, k = 15) +
+  s(weight, k = 30) +
+  s(height, k = 20) +
+
+  factor(sex_male) +
+
+  # Increase k for this problematic interaction:
+  # From marginal k=9 (k'=(9-1)^3 = 512) to marginal k=10 (k'=(10-1)^3 = 729)
+  ti(duration, heart_rate, weight, by = age, k = c(10, 10, 10)) +
+
+  ti(duration, body_temp, k = c(7, 7)) +
+  ti(duration, weight, k = c(10, 10)) +
+  ti(duration, height, k = c(8, 8)) +
+
+  # Increase k for this problematic interaction:
+  # From marginal k=8 (k'=(8-1)^3 = 343) to marginal k=9 (k'=(9-1)^3 = 512)
+  ti(weight, duration, heart_rate, k = c(9, 9, 9)) +
+
+  ti(weight, height, k = c(8, 8))
+
+v16_simplified_formula <- calories ~
+  s(age, k = 10) +
+  s(duration, k = 25) +
+  s(heart_rate, k = 25) + # Reduced from k=30 (v15 edf~25)
+  s(body_temp, k = 15) +
+  s(weight, k = 25) +     # Reduced from k=30 (v15 edf~21)
+  s(height, k = 15) +     # Reduced from k=20 (v15 edf~8)
+
+  factor(sex_male) +
+
+  # Reducing k for the largest ti terms (reverting to v14 levels)
+  ti(duration, heart_rate, weight, by = age, k = c(9, 9, 9)) + # Was k=c(10,10,10)
+
+  ti(duration, body_temp, k = c(7, 7)) +
+  ti(duration, weight, k = c(10, 10)) +
+
+  # Reducing k for ti(duration,height)
+  ti(duration, height, k = c(7, 7)) + # Was k=c(8,8) (v15 edf~24, but p<<<0.001)
+
+  # Reducing k for the other large ti term (reverting to v14 levels)
+  ti(weight, duration, heart_rate, k = c(8, 8, 8)) + # Was k=c(9,9,9)
+
+  ti(weight, height, k = c(8, 8))
+
+
 param_list<- list(base=form_base, # 0.9833
                   #v1=form_dur_heart_weight # bad module  0.9612. worse than base
                   #v3 = v3_formula,
                   #v4= v4_formula
-                  v11b_formula =v11b_formula,
-                  v12 = v12_formula
+                  #v11b_formula =v11b_formula,
+                  #v12 = v12_formula
+                  #v11 = v11_converged_formula_structure,
+                  #v13 = v13_formula
+                  #v14=v14_formula
+                  #v15=v15_formula, # rmsle 0.0678 ,aic 3517389
+                  v16 = v16_simplified_formula
                   )
 mod_list <-
   param_list |>
@@ -575,7 +684,7 @@ set.seed(1234)
 #final_model <- simple_wf_fit|>extract_workflow()
 
 #final_model <- wf_lm |>fit(tr)#|>extract_workflow()
-final_model <- bam_spec 
+final_model <-mod_list$v16
 final_predictions <- final_model |>
    predict(newdata = current_rec|>prep()|>bake(test),type="response") #|>
    #mutate(.pred=case_when(.pred<0~abs(.pred),
@@ -600,12 +709,12 @@ final_predictions <- final_model |>
 
 ### score submit
 ```{r}
-# # submit latest submission.csv
-# system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "0.0914"')
-# 
-# Sys.sleep(15)
-# # get latest score 
-# system('kaggle competitions submissions -q -c playground-series-s5e5')
+# submit latest submission.csv
+system('kaggle competitions submit -c playground-series-s5e5 -f submission.csv.zip -m "v16 model 0.0683"')
+
+Sys.sleep(30)
+# get latest score
+system('kaggle competitions submissions -q -c playground-series-s5e5')
 
 ```
 
